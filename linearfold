@@ -19,6 +19,7 @@ def setgflags():
     flags.DEFINE_string('shape', '', "specify a file name that contains SHAPE reactivity data (DEFAULT: not use SHAPE data)") # SHAPE
     flags.DEFINE_boolean('fasta', False, "input is in fasta format") # FASTA format
     flags.DEFINE_integer('dangles', 2, "the way to treat `dangling end' energies for bases adjacent to helices in free ends and multi-loops (only supporting `0' or `2', default=`2')", short_name="d")
+    flags.DEFINE_integer('threads', 1, "number of threads, default=`1')", short_name="t")
     argv = FLAGS(sys.argv)
 
 def main():
@@ -36,10 +37,11 @@ def main():
         print("ERROR: --dangles currently only supports 0 or 2")
         exit(1)
         
-    dangles = str(FLAGS.dangles)    
+    dangles = str(FLAGS.dangles)
+    threads = str(FLAGS.threads)
 
     path = os.path.dirname(os.path.abspath(__file__))
-    cmd = ["%s/%s" % (path, ('bin/linearfold_v' if use_vienna else 'bin/linearfold_c')), beamsize, is_sharpturn, is_verbose, is_eval, is_constraints, zuker_subopt, delta, shape_file_path, is_fasta, dangles]
+    cmd = ["%s/%s" % (path, ('bin/linearfold_v' if use_vienna else 'bin/linearfold_c')), beamsize, is_sharpturn, is_verbose, is_eval, is_constraints, zuker_subopt, delta, shape_file_path, is_fasta, dangles, threads]
     subprocess.call(cmd, stdin=sys.stdin)
     
 if __name__ == '__main__':

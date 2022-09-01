@@ -8,7 +8,7 @@
 
 #include <fstream>
 #include <iostream>
-#include <sys/time.h>
+#include <chrono>
 #include <stack>
 #include <tuple>
 #include <cassert>
@@ -17,6 +17,11 @@
 #include <string>
 #include <map>
 #include <set>
+#include <utility>
+
+#ifdef _OPENMP
+    #include <omp.h>
+#endif
 
 #include "LinearFold.h"
 
@@ -787,12 +792,11 @@ bool BeamCKYParser::allow_paired(int i, int j, vector<int>* cons, char nuci, cha
 
 BeamCKYParser::DecoderResult BeamCKYParser::parse(string& seq, vector<int>* cons) {
 
-    struct timeval parse_starttime, parse_endtime;
-
     // number of states
     unsigned long nos_H = 0, nos_P = 0, nos_M2 = 0,
             nos_M = 0, nos_C = 0, nos_Multi = 0;
-    gettimeofday(&parse_starttime, NULL);
+
+    const std::chrono::steady_clock::time_point parse_starttime = std::chrono::steady_clock::now();
     prepare(static_cast<unsigned>(seq.length()));
 
     for (int i = 0; i < seq_length; ++i)
@@ -1446,20 +1450,21 @@ BeamCKYParser::DecoderResult BeamCKYParser::parse(string& seq, vector<int>* cons
 
     State& viterbi = bestC[seq_length-1];
 
-    char result[seq_length+1];
-    get_parentheses(result, seq);
+    string result(seq_length+1, 0);
+//    vector<char> result(seq_length+1);
+//    char result[seq_length+1];
+    get_parentheses(const_cast<char*>(result.data()), seq);
 
-    gettimeofday(&parse_endtime, NULL);
-    double parse_elapsed_time = parse_endtime.tv_sec - parse_starttime.tv_sec + (parse_endtime.tv_usec-parse_starttime.tv_usec)/1000000.0;
+    const std::chrono::steady_clock::time_point parse_endtime = std::chrono::steady_clock::now();
+    const double parse_elapsed_time = std::chrono::duration_cast<std::chrono::microseconds>(parse_endtime - parse_starttime).count() / 1000000.0;
 
     unsigned long nos_tot = nos_H + nos_P + nos_M2 + nos_Multi + nos_M + nos_C;
     if (is_verbose) {
         printf("Parse Time: %f len: %d score %f #states %lu H %lu P %lu M2 %lu Multi %lu M %lu C %lu\n",
                parse_elapsed_time, seq_length, double(viterbi.score), nos_tot,
                nos_H, nos_P, nos_M2, nos_Multi, nos_M, nos_C);
+        fflush(stdout);
     }
-
-    fflush(stdout);
 
     if (zuker){
 #ifdef lv
@@ -1468,7 +1473,7 @@ BeamCKYParser::DecoderResult BeamCKYParser::parse(string& seq, vector<int>* cons
         double printscore = viterbi.score;
 #endif
 
-        printf("%s (%.2f)\n", string(result).c_str(), printscore);
+        printf("%s (%.2f)\n", result.c_str(), printscore);
         printf("Zuker suboptimal structures...\n");
         if (seq_length < 500)
             window_size = 2;
@@ -1570,14 +1575,12 @@ BeamCKYParser::DecoderResult BeamCKYParser::parse(string& seq, vector<int>* cons
 #endif
         }
     }
-    return {string(result), viterbi.score, nos_tot, parse_elapsed_time};
+    return {result, viterbi.score, nos_tot, parse_elapsed_time};
 }
 
 void BeamCKYParser::outside(vector<int> next_pair[]){
       
-    struct timeval parse_starttime, parse_endtime;
-
-    gettimeofday(&parse_starttime, NULL);
+    const std::chrono::steady_clock::time_point parse_starttime = std::chrono::steady_clock::now();
 
     bestC_beta[seq_length-1].score = 0.0;
     bestC_beta[seq_length-1].manner = MANNER_NONE;
@@ -1957,6 +1960,7 @@ int main(int argc, char** argv){
     string shape_file_path = "";
     bool fasta = false;
     int dangles = 2;
+    int num_threads = 1;
 
     if (argc > 1) {
         beamsize = atoi(argv[1]);
@@ -1969,6 +1973,8 @@ int main(int argc, char** argv){
         shape_file_path = argv[8];
         fasta = atoi(argv[9]) == 1;
         dangles = atoi(argv[10]);
+        if (argc >= 12)
+            num_threads = atoi(argv[11]);
     }
 
     if (is_constraints && zuker_subopt){
@@ -2148,7 +2154,7 @@ int main(int argc, char** argv){
             if (fasta){
                 for (string seq; getline(cin, seq);){
                     if (seq.empty()) continue;
-                    else if (seq[0] == '>' or seq[0] == ';'){
+                    else if ((seq[0] == '>') || (seq[0] == ';')){
                         rna_name_list.push_back(seq); // sequence name
                         if (!rna_seq.empty())
                             rna_seq_list.push_back(rna_seq);
@@ -2172,31 +2178,47 @@ int main(int argc, char** argv){
                 }
             }
 
-            for(int i = 0; i < rna_seq_list.size(); i++){
-                if (rna_name_list.size() > i)
-                    printf("%s\n", rna_name_list[i].c_str());
-                rna_seq = rna_seq_list[i];
+            vector<BeamCKYParser::DecoderResult> decoder_results(rna_seq_list.size());
+            vector<double> scores(rna_seq_list.size());
 
-                printf("%s\n", rna_seq.c_str());
+#ifdef _OPENMP
+            if (num_threads > 0)
+                omp_set_num_threads(std::min(num_threads, omp_get_max_threads()));
+            else
+                omp_set_num_threads(omp_get_max_threads());
+#endif
+
+            #pragma omp parallel for schedule(static)
+            for(int i = 0; i < rna_seq_list.size(); i++){
+                std::string cur_seq = rna_seq_list[i];
                 
                 // convert to uppercase
-                transform(rna_seq.begin(), rna_seq.end(), rna_seq.begin(), ::toupper);
+                transform(cur_seq.begin(), cur_seq.end(), cur_seq.begin(), ::toupper);
 
                 // convert T to U
-                replace(rna_seq.begin(), rna_seq.end(), 'T', 'U');
+                replace(cur_seq.begin(), cur_seq.end(), 'T', 'U');
 
                 // lhuang: moved inside loop, fixing an obscure but crucial bug in initialization
                 BeamCKYParser parser(beamsize, !sharpturn, is_verbose, false, zuker_subopt, energy_delta, shape_file_path, fasta, dangles);
 
-                BeamCKYParser::DecoderResult result = parser.parse(rna_seq, NULL);
+                const BeamCKYParser::DecoderResult result = parser.parse(cur_seq, NULL);
 
         #ifdef lv
                 double printscore = (result.score / -100.0);
         #else
                 double printscore = result.score;
         #endif
+                decoder_results[i] = std::move(result);
+                scores[i] = printscore;
+            }
+
+            for(int i = 0; i < rna_seq_list.size(); i++){
+                if (rna_name_list.size() > i)
+                    printf("%s\n", rna_name_list[i].c_str());
+
+                printf("%s\n", rna_seq_list[i].c_str());
                 if (!zuker_subopt){
-                    printf("%s (%.2f)\n", result.structure.c_str(), printscore);
+                    printf("%s (%.2f)\n", decoder_results[i].structure.c_str(), scores[i]);
                 }
             }
         }

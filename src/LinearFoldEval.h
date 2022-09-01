@@ -38,8 +38,13 @@ long eval(string seq, string ref, bool is_verbose, int dangle_model) {
 
     long total_energy = 0;
     long external_energy = 0;
+#if defined(_WIN32) || defined(WIN32)
+    vector<long> M1_energy(seq_length);
+    vector<long> multi_number_unpaired(seq_length);
+#else
     long M1_energy[seq_length];
     long multi_number_unpaired[seq_length];
+#endif
     // int external_number_unpaired = 0;
 
     stack<pair<int, int>> stk; // tuple of (index, page)
